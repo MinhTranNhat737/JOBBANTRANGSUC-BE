@@ -32,12 +32,15 @@ router.get('/', async (req, res) => {
 
     const query = `
       SELECT o.*, 
-        c.full_name AS customer_name, c.email AS customer_email, c.phone AS customer_phone,
+        COALESCE(c.full_name, o.shipping_name) AS customer_name,
+        COALESCE(c.email, o.customer_email) AS customer_email,
+        COALESCE(c.phone, o.shipping_phone) AS customer_phone,
         COALESCE(
           json_agg(
             json_build_object(
               'id', oi.id, 'product_id', oi.product_id, 'name', oi.name,
-              'unit_price', oi.unit_price, 'quantity', oi.quantity
+              'unit_price', oi.unit_price, 'quantity', oi.quantity,
+              'image', oi.image, 'size', oi.size, 'product_slug', oi.product_slug
             )
           ) FILTER (WHERE oi.id IS NOT NULL), '[]'
         ) AS items
@@ -75,9 +78,9 @@ router.get('/:idOrCode', async (req, res) => {
     const isNum = /^\d+$/.test(raw);
 
     const query = isNum
-      ? `SELECT o.*, c.full_name AS customer_name, c.email AS customer_email, c.phone AS customer_phone 
+      ? `SELECT o.*, COALESCE(c.full_name, o.shipping_name) AS customer_name, COALESCE(c.email, o.customer_email) AS customer_email, COALESCE(c.phone, o.shipping_phone) AS customer_phone 
          FROM orders o LEFT JOIN customers c ON o.customer_id = c.id WHERE o.id = $1 OR o.code = $2`
-      : `SELECT o.*, c.full_name AS customer_name, c.email AS customer_email, c.phone AS customer_phone 
+      : `SELECT o.*, COALESCE(c.full_name, o.shipping_name) AS customer_name, COALESCE(c.email, o.customer_email) AS customer_email, COALESCE(c.phone, o.shipping_phone) AS customer_phone 
          FROM orders o LEFT JOIN customers c ON o.customer_id = c.id WHERE o.code = $1 OR o.code = $2`;
 
     const params = isNum ? [parseInt(raw), raw] : [raw, `#${raw.replace('#', '')}`];
@@ -90,7 +93,7 @@ router.get('/:idOrCode', async (req, res) => {
     const order = orderResult.rows[0];
 
     const itemsResult = await pool.query(
-      `SELECT oi.*, p.sku, p.slug AS product_slug 
+      `SELECT oi.*, p.sku, COALESCE(oi.product_slug, p.slug) AS product_slug 
        FROM order_items oi 
        LEFT JOIN products p ON oi.product_id = p.id 
        WHERE oi.order_id = $1`,
@@ -113,6 +116,7 @@ router.post('/', async (req, res) => {
     const {
       code,
       customer_id,
+      customer_email,
       payment_method = 'cod',
       shipping_name,
       shipping_phone,
@@ -121,7 +125,35 @@ router.post('/', async (req, res) => {
       items = [],
     } = req.body;
 
-    const orderCode = code || `DH${Date.now().toString().slice(-8)}`;
+    let orderCode = code ? String(code).trim() : null;
+
+    // Kiểm tra xem mã đơn này đã tồn tại trong database chưa (tránh trùng khóa unique)
+    if (orderCode) {
+      const existing = await client.query('SELECT id FROM orders WHERE code = $1', [orderCode]);
+      if (existing.rows.length > 0) {
+        // Mã đã tồn tại, đánh dấu để sinh mã mới tự động
+        orderCode = null;
+      }
+    }
+
+    // Nếu không có mã hoặc mã bị trùng, tự động sinh mã mới dạng #XXXX tăng dần
+    if (!orderCode) {
+      const maxRes = await client.query(`
+        SELECT code FROM orders 
+        WHERE code ~ '^#[0-9]+$' 
+        ORDER BY LENGTH(code) DESC, code DESC 
+        LIMIT 1
+      `);
+      let nextNum = 1001;
+      if (maxRes.rows.length > 0) {
+        const lastCode = maxRes.rows[0].code;
+        const parsed = parseInt(lastCode.replace(/\D/g, ''), 10);
+        if (!isNaN(parsed)) {
+          nextNum = parsed + 1;
+        }
+      }
+      orderCode = `#${nextNum}`;
+    }
 
     // Tính tổng tiền
     let total_amount = 0;
@@ -129,44 +161,99 @@ router.post('/', async (req, res) => {
       total_amount = items.reduce((sum, it) => sum + (parseFloat(it.unit_price || it.price || 0) * (it.quantity || 1)), 0);
     }
 
-    const orderResult = await client.query(
-      `INSERT INTO orders 
-        (code, customer_id, status, payment_method, total_amount, shipping_name, shipping_phone, shipping_addr, note)
-       VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
-      [
-        orderCode,
-        customer_id ? parseInt(customer_id) : null,
-        payment_method,
-        total_amount,
-        shipping_name || null,
-        shipping_phone || null,
-        shipping_addr || null,
-        note || null,
-      ]
-    );
+    // Insert đơn hàng với fallback nếu cột customer_email chưa có
+    let orderResult;
+    try {
+      orderResult = await client.query(
+        `INSERT INTO orders 
+          (code, customer_id, customer_email, status, payment_method, total_amount, shipping_name, shipping_phone, shipping_addr, note)
+         VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9)
+         RETURNING *`,
+        [
+          orderCode,
+          customer_id ? parseInt(customer_id) : null,
+          customer_email || null,
+          payment_method,
+          total_amount,
+          shipping_name || null,
+          shipping_phone || null,
+          shipping_addr || null,
+          note || null,
+        ]
+      );
+    } catch (insertErr) {
+      // Fallback nếu database chưa có cột customer_email
+      orderResult = await client.query(
+        `INSERT INTO orders 
+          (code, customer_id, status, payment_method, total_amount, shipping_name, shipping_phone, shipping_addr, note)
+         VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8)
+         RETURNING *`,
+        [
+          orderCode,
+          customer_id ? parseInt(customer_id) : null,
+          payment_method,
+          total_amount,
+          shipping_name || null,
+          shipping_phone || null,
+          shipping_addr || null,
+          note || null,
+        ]
+      );
+    }
 
     const order = orderResult.rows[0];
 
     // Thêm các món hàng & giảm tồn kho
     if (items && items.length > 0) {
       for (const item of items) {
-        await client.query(
-          `INSERT INTO order_items (order_id, product_id, name, unit_price, quantity)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [
-            order.id,
-            item.product_id ? parseInt(item.product_id) : null,
-            item.name,
-            parseFloat(item.unit_price || item.price || 0),
-            parseInt(item.quantity || 1),
-          ]
-        );
+        let prodId = item.product_id ? parseInt(item.product_id) : null;
+        const itemSlug = item.slug || item.product_slug || null;
 
-        if (item.product_id) {
+        // Nếu chưa có product_id nhưng có slug, tra cứu id trong bảng products
+        if (!prodId && itemSlug) {
+          const pRes = await client.query('SELECT id FROM products WHERE slug = $1 LIMIT 1', [itemSlug]);
+          if (pRes.rows.length > 0) {
+            prodId = pRes.rows[0].id;
+          }
+        }
+
+        const itemImage = item.image || null;
+        const itemSize = item.size || null;
+
+        try {
+          await client.query(
+            `INSERT INTO order_items (order_id, product_id, name, unit_price, quantity, image, size, product_slug)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+              order.id,
+              prodId,
+              item.name,
+              parseFloat(item.unit_price || item.price || 0),
+              parseInt(item.quantity || 1),
+              itemImage,
+              itemSize,
+              itemSlug,
+            ]
+          );
+        } catch (itemErr) {
+          // Fallback nếu cột image / size chưa có
+          await client.query(
+            `INSERT INTO order_items (order_id, product_id, name, unit_price, quantity)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [
+              order.id,
+              prodId,
+              item.name,
+              parseFloat(item.unit_price || item.price || 0),
+              parseInt(item.quantity || 1),
+            ]
+          );
+        }
+
+        if (prodId) {
           await client.query(
             'UPDATE products SET quantity = GREATEST(0, quantity - $1), updated_at = NOW() WHERE id = $2',
-            [parseInt(item.quantity || 1), parseInt(item.product_id)]
+            [parseInt(item.quantity || 1), prodId]
           );
         }
       }
@@ -177,18 +264,23 @@ router.post('/', async (req, res) => {
     // Lấy lại đơn hàng đầy đủ
     const fullOrder = await pool.query(
       `SELECT o.*, 
+        COALESCE(c.full_name, o.shipping_name) AS customer_name,
+        COALESCE(c.email, o.customer_email) AS customer_email,
+        COALESCE(c.phone, o.shipping_phone) AS customer_phone,
         COALESCE(
           json_agg(
             json_build_object(
               'id', oi.id, 'product_id', oi.product_id, 'name', oi.name,
-              'unit_price', oi.unit_price, 'quantity', oi.quantity
+              'unit_price', oi.unit_price, 'quantity', oi.quantity,
+              'image', oi.image, 'size', oi.size, 'product_slug', oi.product_slug
             )
           ) FILTER (WHERE oi.id IS NOT NULL), '[]'
         ) AS items
        FROM orders o
+       LEFT JOIN customers c ON o.customer_id = c.id
        LEFT JOIN order_items oi ON oi.order_id = o.id
        WHERE o.id = $1
-       GROUP BY o.id`,
+       GROUP BY o.id, c.id`,
       [order.id]
     );
 

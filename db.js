@@ -22,11 +22,23 @@ const poolConfig = isCloudDatabase
 
 const pool = new Pool(poolConfig);
 
-// Test connection on startup
+// Test connection on startup & run safe migrations
 pool.query('SELECT NOW()')
-  .then(() => {
+  .then(async () => {
     const target = isCloudDatabase ? 'Heroku DATABASE_URL (Cloud)' : (process.env.DB_NAME || 'BANPHUKIEN');
     console.log('✅ PostgreSQL connected to', target);
+
+    try {
+      await pool.query(`
+        ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_email VARCHAR(200);
+        ALTER TABLE order_items ADD COLUMN IF NOT EXISTS image VARCHAR(500);
+        ALTER TABLE order_items ADD COLUMN IF NOT EXISTS size VARCHAR(50);
+        ALTER TABLE order_items ADD COLUMN IF NOT EXISTS product_slug VARCHAR(200);
+      `);
+      console.log('✅ DB tables verified with extra columns');
+    } catch (migErr) {
+      console.warn('⚠️ Safe migration note:', migErr.message);
+    }
   })
   .catch((err) => console.error('❌ PostgreSQL connection error:', err.message));
 
