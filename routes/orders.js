@@ -294,6 +294,19 @@ router.post('/', async (req, res) => {
   }
 });
 
+// GET /api/orders/fix-constraint - Tự động sửa ràng buộc status
+router.get('/fix-constraint', async (req, res) => {
+  try {
+    const constrBefore = await pool.query("SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'orders'::regclass");
+    await pool.query("ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_status_check");
+    await pool.query("ALTER TABLE orders ADD CONSTRAINT orders_status_check CHECK (status IN ('pending', 'confirmed', 'paid', 'shipping', 'delivered', 'completed', 'cancelled'))");
+    const constrAfter = await pool.query("SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'orders'::regclass");
+    res.json({ success: true, before: constrBefore.rows, after: constrAfter.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // PATCH /api/orders/:idOrCode/status - Cập nhật trạng thái đơn
 router.patch('/:idOrCode/status', async (req, res) => {
   try {
@@ -311,7 +324,20 @@ router.patch('/:idOrCode/status', async (req, res) => {
       : 'UPDATE orders SET status = $1, updated_at = NOW() WHERE code = $2 OR code = $3 RETURNING *';
 
     const params = isNum ? [status, parseInt(raw), raw] : [status, raw, `#${raw.replace('#', '')}`];
-    const result = await pool.query(query, params);
+    
+    let result;
+    try {
+      result = await pool.query(query, params);
+    } catch (dbErr) {
+      if (dbErr.message && dbErr.message.includes('orders_status_check')) {
+        // Tự động gỡ bỏ ràng buộc cũ và cập nhật ràng buộc mới
+        await pool.query('ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_status_check');
+        await pool.query("ALTER TABLE orders ADD CONSTRAINT orders_status_check CHECK (status IN ('pending', 'confirmed', 'paid', 'shipping', 'delivered', 'completed', 'cancelled'))");
+        result = await pool.query(query, params);
+      } else {
+        throw dbErr;
+      }
+    }
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Đơn hàng không tồn tại' });
