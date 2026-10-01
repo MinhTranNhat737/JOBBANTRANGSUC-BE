@@ -34,8 +34,10 @@ pool.query('SELECT NOW()')
         ALTER TABLE order_items ADD COLUMN IF NOT EXISTS image VARCHAR(500);
         ALTER TABLE order_items ADD COLUMN IF NOT EXISTS size VARCHAR(50);
         ALTER TABLE order_items ADD COLUMN IF NOT EXISTS product_slug VARCHAR(200);
+        ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_status_check;
+        ALTER TABLE orders ADD CONSTRAINT orders_status_check CHECK (status IN ('pending', 'confirmed', 'paid', 'shipping', 'delivered', 'completed', 'cancelled'));
       `);
-      console.log('✅ DB tables verified with extra columns');
+      console.log('✅ DB tables verified with extra columns and status constraint updated');
     } catch (migErr) {
       console.warn('⚠️ Safe migration note:', migErr.message);
     }
