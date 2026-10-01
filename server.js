@@ -10,10 +10,20 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // ── Middleware ────────────────────────────────────────────
-app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
-  credentials: true,
-}));
+// Hỗ trợ cấu hình CORS linh hoạt khi deploy lên Heroku
+const rawCorsOrigin = process.env.CORS_ORIGIN;
+let corsOptions = { credentials: true };
+if (rawCorsOrigin) {
+  if (rawCorsOrigin === '*') {
+    corsOptions.origin = true;
+  } else {
+    const origins = rawCorsOrigin.split(',').map((o) => o.trim());
+    corsOptions.origin = origins.length === 1 ? origins[0] : origins;
+  }
+} else {
+  corsOptions.origin = ['http://localhost:3000', 'http://127.0.0.1:3000'];
+}
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
