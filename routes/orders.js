@@ -161,55 +161,80 @@ router.post('/', async (req, res) => {
       total_amount = items.reduce((sum, it) => sum + (parseFloat(it.unit_price || it.price || 0) * (it.quantity || 1)), 0);
     }
 
-    // Insert đơn hàng với fallback nếu cột customer_email chưa có
-    let orderResult;
-    try {
-      orderResult = await client.query(
-        `INSERT INTO orders 
-          (code, customer_id, customer_email, status, payment_method, total_amount, shipping_name, shipping_phone, shipping_addr, note)
-         VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9)
-         RETURNING *`,
-        [
-          orderCode,
-          customer_id ? parseInt(customer_id) : null,
-          customer_email || null,
-          payment_method,
-          total_amount,
-          shipping_name || null,
-          shipping_phone || null,
-          shipping_addr || null,
-          note || null,
-        ]
-      );
-    } catch (insertErr) {
-      // Fallback nếu database chưa có cột customer_email
-      orderResult = await client.query(
-        `INSERT INTO orders 
-          (code, customer_id, status, payment_method, total_amount, shipping_name, shipping_phone, shipping_addr, note)
-         VALUES ($1, $2, 'pending', $3, $4, $5, $6, $7, $8)
-         RETURNING *`,
-        [
-          orderCode,
-          customer_id ? parseInt(customer_id) : null,
-          payment_method,
-          total_amount,
-          shipping_name || null,
-          shipping_phone || null,
-          shipping_addr || null,
-          note || null,
-        ]
-      );
+    // 1. Xác định customer_id hợp lệ (tránh vi phạm Foreign Key REFERENCES customers(id))
+    let validCustomerId = null;
+    if (customer_id && !isNaN(parseInt(customer_id, 10))) {
+      const cCheck = await client.query('SELECT id FROM customers WHERE id = $1', [parseInt(customer_id, 10)]);
+      if (cCheck.rows.length > 0) {
+        validCustomerId = cCheck.rows[0].id;
+      }
     }
+    // Nếu chưa tìm thấy theo ID, đối soát theo email hoặc số điện thoại trong bảng customers
+    if (!validCustomerId && (customer_email || shipping_phone)) {
+      const cFind = await client.query(
+        `SELECT id FROM customers 
+         WHERE (LOWER(email) = LOWER($1) AND $1 IS NOT NULL AND $1 <> '') 
+            OR (phone = $2 AND $2 IS NOT NULL AND $2 <> '') 
+         LIMIT 1`,
+        [customer_email ? customer_email.trim() : null, shipping_phone ? shipping_phone.trim() : null]
+      );
+      if (cFind.rows.length > 0) {
+        validCustomerId = cFind.rows[0].id;
+      } else if (shipping_name && (customer_email || shipping_phone)) {
+        // Tự động thêm khách hàng mới vào bảng customers để liên kết đơn hàng
+        try {
+          const newCust = await client.query(
+            `INSERT INTO customers (full_name, email, phone, address, is_ctv) 
+             VALUES ($1, $2, $3, $4, false) 
+             RETURNING id`,
+            [
+              shipping_name.trim(),
+              customer_email ? customer_email.trim().toLowerCase() : null,
+              shipping_phone ? shipping_phone.trim() : null,
+              shipping_addr || null,
+            ]
+          );
+          validCustomerId = newCust.rows[0].id;
+        } catch (cErr) {
+          console.warn('Auto create customer warning:', cErr.message);
+        }
+      }
+    }
+
+    // Insert đơn hàng với customer_id an toàn tuyệt đối
+    const orderResult = await client.query(
+      `INSERT INTO orders 
+        (code, customer_id, customer_email, status, payment_method, total_amount, shipping_name, shipping_phone, shipping_addr, note)
+       VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9)
+       RETURNING *`,
+      [
+        orderCode,
+        validCustomerId,
+        customer_email || null,
+        payment_method,
+        total_amount,
+        shipping_name || null,
+        shipping_phone || null,
+        shipping_addr || null,
+        note || null,
+      ]
+    );
 
     const order = orderResult.rows[0];
 
     // Thêm các món hàng & giảm tồn kho
     if (items && items.length > 0) {
       for (const item of items) {
-        let prodId = item.product_id ? parseInt(item.product_id) : null;
-        const itemSlug = item.slug || item.product_slug || null;
+        let prodId = null;
+        if (item.product_id && !isNaN(parseInt(item.product_id, 10))) {
+          const pCheck = await client.query('SELECT id FROM products WHERE id = $1', [parseInt(item.product_id, 10)]);
+          if (pCheck.rows.length > 0) {
+            prodId = pCheck.rows[0].id;
+          }
+        }
 
-        // Nếu chưa có product_id nhưng có slug, tra cứu id trong bảng products
+        const itemSlug = item.slug || item.product_slug || null;
+        // Nếu chưa có prodId nhưng có slug, tra cứu id trong bảng products
         if (!prodId && itemSlug) {
           const pRes = await client.query('SELECT id FROM products WHERE slug = $1 LIMIT 1', [itemSlug]);
           if (pRes.rows.length > 0) {
@@ -219,6 +244,8 @@ router.post('/', async (req, res) => {
 
         const itemImage = item.image || null;
         const itemSize = item.size || null;
+        const unitPrice = parseFloat(item.unit_price || item.price || 0) || 0;
+        const quantity = parseInt(item.quantity || 1, 10) || 1;
 
         try {
           await client.query(
@@ -227,9 +254,9 @@ router.post('/', async (req, res) => {
             [
               order.id,
               prodId,
-              item.name,
-              parseFloat(item.unit_price || item.price || 0),
-              parseInt(item.quantity || 1),
+              item.name || 'Sản phẩm',
+              unitPrice,
+              quantity,
               itemImage,
               itemSize,
               itemSlug,
@@ -243,9 +270,9 @@ router.post('/', async (req, res) => {
             [
               order.id,
               prodId,
-              item.name,
-              parseFloat(item.unit_price || item.price || 0),
-              parseInt(item.quantity || 1),
+              item.name || 'Sản phẩm',
+              unitPrice,
+              quantity,
             ]
           );
         }
@@ -253,7 +280,7 @@ router.post('/', async (req, res) => {
         if (prodId) {
           await client.query(
             'UPDATE products SET quantity = GREATEST(0, quantity - $1), updated_at = NOW() WHERE id = $2',
-            [parseInt(item.quantity || 1), prodId]
+            [quantity, prodId]
           );
         }
       }
