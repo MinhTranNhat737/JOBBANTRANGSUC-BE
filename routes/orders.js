@@ -127,16 +127,38 @@ router.post('/', async (req, res) => {
 
     let orderCode = code ? String(code).trim() : null;
 
-    // Kiểm tra xem mã đơn này đã tồn tại trong database chưa (tránh trùng khóa unique)
+    // Kiểm tra xem mã đơn này đã tồn tại trong database chưa (tránh trùng lặp / double submit)
     if (orderCode) {
       const existing = await client.query('SELECT id FROM orders WHERE code = $1', [orderCode]);
       if (existing.rows.length > 0) {
-        // Mã đã tồn tại, đánh dấu để sinh mã mới tự động
-        orderCode = null;
+        // Đơn hàng đã tồn tại, hoàn tất transaction và trả về đơn đã có (idempotency - chống sinh đơn đôi)
+        await client.query('COMMIT');
+        const existingOrder = await pool.query(
+          `SELECT o.*, 
+            COALESCE(c.full_name, o.shipping_name) AS customer_name,
+            COALESCE(c.email, o.customer_email) AS customer_email,
+            COALESCE(c.phone, o.shipping_phone) AS customer_phone,
+            COALESCE(
+              json_agg(
+                json_build_object(
+                  'id', oi.id, 'product_id', oi.product_id, 'name', oi.name,
+                  'unit_price', oi.unit_price, 'quantity', oi.quantity,
+                  'image', oi.image, 'size', oi.size, 'product_slug', oi.product_slug
+                )
+              ) FILTER (WHERE oi.id IS NOT NULL), '[]'
+            ) AS items
+           FROM orders o
+           LEFT JOIN customers c ON o.customer_id = c.id
+           LEFT JOIN order_items oi ON oi.order_id = o.id
+           WHERE o.id = $1
+           GROUP BY o.id, c.id`,
+          [existing.rows[0].id]
+        );
+        return res.status(200).json(existingOrder.rows[0]);
       }
     }
 
-    // Nếu không có mã hoặc mã bị trùng, tự động sinh mã mới dạng #XXXX tăng dần
+    // Nếu không có mã truyền lên, tự động sinh mã mới dạng #XXXX tăng dần
     if (!orderCode) {
       const maxRes = await client.query(`
         SELECT code FROM orders 
