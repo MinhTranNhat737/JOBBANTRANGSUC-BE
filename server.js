@@ -20,6 +20,9 @@ if (rawCorsOrigin) {
     const origins = rawCorsOrigin.split(',').map((o) => o.trim());
     corsOptions.origin = origins.length === 1 ? origins[0] : origins;
   }
+} else if (process.env.NODE_ENV === 'production' || process.env.PORT !== '3001') {
+  // Production (Heroku): cho phép tất cả origin (Vercel, custom domain, etc.)
+  corsOptions.origin = true;
 } else {
   corsOptions.origin = ['http://localhost:3000', 'http://127.0.0.1:3000'];
 }
