@@ -35,8 +35,8 @@ router.get('/', async (req, res) => {
       params.push(status);
     }
     if (search) {
-      where.push(`(p.name ILIKE $${i} OR p.sku ILIKE $${i} OR p.slug ILIKE $${i})`);
-      params.push(`%${search}%`);
+      where.push(`(p.name ILIKE $${i} OR p.sku ILIKE $${i} OR p.slug ILIKE $${i} OR p.description ILIKE $${i} OR b.name ILIKE $${i} OR c.name ILIKE $${i})`);
+      params.push(`%${search.trim()}%`);
       i++;
     }
 
@@ -148,6 +148,10 @@ router.post('/', async (req, res) => {
       status = 'active',
       qc_status,
       note,
+      sizes,
+      badge,
+      images,
+      image,
     } = req.body;
 
     if (!name) return res.status(400).json({ error: 'Tên sản phẩm là bắt buộc' });
@@ -157,8 +161,8 @@ router.post('/', async (req, res) => {
 
     const result = await pool.query(
       `INSERT INTO products 
-        (sku, name, slug, description, category_id, brand_id, quantity, import_price, sale_price, status, qc_status, note)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        (sku, name, slug, description, category_id, brand_id, quantity, import_price, sale_price, status, qc_status, note, sizes, badge)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        RETURNING *`,
       [
         finalSku,
@@ -173,70 +177,131 @@ router.post('/', async (req, res) => {
         status,
         qc_status || null,
         note || null,
+        Array.isArray(sizes) ? sizes : null,
+        badge || null,
       ]
     );
 
-    res.status(201).json(result.rows[0]);
+    const newProd = result.rows[0];
+
+    // Lưu ảnh nếu có
+    if (Array.isArray(images) && images.length > 0) {
+      for (let idx = 0; idx < images.length; idx++) {
+        const item = images[idx];
+        const url = typeof item === 'string' ? item : item.url;
+        const isPrimary = typeof item === 'object' && item.is_primary !== undefined ? Boolean(item.is_primary) : (idx === 0);
+        if (url && url.trim()) {
+          await pool.query(
+            'INSERT INTO product_images (product_id, url, is_primary, sort_order) VALUES ($1, $2, $3, $4)',
+            [newProd.id, url.trim(), isPrimary, idx]
+          );
+        }
+      }
+    } else if (typeof image === 'string' && image.trim()) {
+      await pool.query(
+        'INSERT INTO product_images (product_id, url, is_primary, sort_order) VALUES ($1, $2, true, 0)',
+        [newProd.id, image.trim()]
+      );
+    }
+
+    res.status(201).json(newProd);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// PUT /api/products/:id - Cập nhật sản phẩm
-router.put('/:id', async (req, res) => {
+// PUT /api/products/:idOrSlug - Cập nhật sản phẩm & hình ảnh
+router.put('/:idOrSlug', async (req, res) => {
   try {
-    const {
-      sku,
-      name,
-      slug,
-      description,
-      category_id,
-      brand_id,
-      quantity,
-      import_price,
-      sale_price,
-      status,
-      qc_status,
-      note,
-    } = req.body;
+    const isId = /^\d+$/.test(req.params.idOrSlug);
+    let productId;
+    if (isId) {
+      productId = parseInt(req.params.idOrSlug);
+    } else {
+      const pFind = await pool.query('SELECT id FROM products WHERE slug = $1', [req.params.idOrSlug]);
+      if (pFind.rows.length === 0) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+      productId = pFind.rows[0].id;
+    }
 
-    const result = await pool.query(
-      `UPDATE products 
-       SET sku = COALESCE($1, sku),
-           name = COALESCE($2, name),
-           slug = COALESCE($3, slug),
-           description = COALESCE($4, description),
-           category_id = COALESCE($5, category_id),
-           brand_id = COALESCE($6, brand_id),
-           quantity = COALESCE($7, quantity),
-           import_price = COALESCE($8, import_price),
-           sale_price = COALESCE($9, sale_price),
-           status = COALESCE($10, status),
-           qc_status = COALESCE($11, qc_status),
-           note = COALESCE($12, note),
-           updated_at = NOW()
-       WHERE id = $13
-       RETURNING *`,
-      [
-        sku,
-        name,
-        slug,
-        description,
-        category_id ? parseInt(category_id) : null,
-        brand_id ? parseInt(brand_id) : null,
-        quantity !== undefined ? parseInt(quantity) : null,
-        import_price !== undefined ? parseFloat(import_price) : null,
-        sale_price !== undefined ? parseFloat(sale_price) : null,
-        status,
-        qc_status,
-        note,
-        parseInt(req.params.id),
-      ]
-    );
+    const { images, image } = req.body;
+    const allowedFields = [
+      'sku', 'name', 'slug', 'description', 'category_id', 'brand_id',
+      'quantity', 'import_price', 'sale_price', 'status', 'qc_status', 'note',
+      'sizes', 'badge'
+    ];
+    let updates = [];
+    let params = [];
+    let idx = 1;
 
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
-    res.json(result.rows[0]);
+    for (const f of allowedFields) {
+      if (req.body[f] !== undefined) {
+        let val = req.body[f];
+        if (f === 'sizes') {
+          val = Array.isArray(val) ? val : null;
+        } else if (f === 'category_id' || f === 'brand_id' || f === 'quantity') {
+          val = val !== null && val !== '' ? parseInt(val) : null;
+        } else if (f === 'import_price' || f === 'sale_price') {
+          val = val !== null && val !== '' ? parseFloat(val) : null;
+        }
+        updates.push(`"${f}" = $${idx++}`);
+        params.push(val);
+      }
+    }
+    updates.push(`updated_at = NOW()`);
+    params.push(productId);
+
+    let result;
+    if (updates.length > 1) {
+      const updateQuery = `UPDATE products SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`;
+      result = await pool.query(updateQuery, params);
+      if (result.rows.length === 0) return res.status(404).json({ error: 'Không tìm thấy sản phẩm' });
+    }
+
+    // Cập nhật danh sách ảnh nếu được truyền lên
+    if (Array.isArray(images) && images.length > 0) {
+      await pool.query('DELETE FROM product_images WHERE product_id = $1', [productId]);
+      for (let idx = 0; idx < images.length; idx++) {
+        const item = images[idx];
+        const url = typeof item === 'string' ? item : item.url;
+        const isPrimary = typeof item === 'object' && item.is_primary !== undefined ? Boolean(item.is_primary) : (idx === 0);
+        if (url && url.trim()) {
+          await pool.query(
+            'INSERT INTO product_images (product_id, url, is_primary, sort_order) VALUES ($1, $2, $3, $4)',
+            [productId, url.trim(), isPrimary, idx]
+          );
+        }
+      }
+    } else if (typeof image === 'string' && image.trim()) {
+      await pool.query('DELETE FROM product_images WHERE product_id = $1', [productId]);
+      await pool.query(
+        'INSERT INTO product_images (product_id, url, is_primary, sort_order) VALUES ($1, $2, true, 0)',
+        [productId, image.trim()]
+      );
+    }
+
+    // Lấy lại dữ liệu đầy đủ kèm images
+    const updatedQuery = `
+      SELECT 
+        p.*,
+        c.name AS category_name, c.slug AS category_slug,
+        b.name AS brand_name, b.slug AS brand_slug,
+        COALESCE(
+          json_agg(
+            json_build_object('id', pi.id, 'url', pi.url, 'sort_order', pi.sort_order, 'is_primary', pi.is_primary)
+            ORDER BY pi.is_primary DESC, pi.sort_order ASC
+          ) FILTER (WHERE pi.id IS NOT NULL), '[]'
+        ) AS images
+      FROM products p
+      LEFT JOIN categories c ON p.category_id = c.id
+      LEFT JOIN brands b ON p.brand_id = b.id
+      LEFT JOIN product_images pi ON pi.product_id = p.id
+      WHERE p.id = $1
+      GROUP BY p.id, c.id, b.id
+    `;
+    const fullResult = await pool.query(updatedQuery, [productId]);
+    res.json(fullResult.rows[0] || result.rows[0]);
   } catch (err) {
+    console.error('PUT /api/products error:', err);
     res.status(500).json({ error: err.message });
   }
 });

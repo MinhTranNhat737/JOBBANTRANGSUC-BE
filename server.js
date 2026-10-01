@@ -29,6 +29,7 @@ app.use('/api/categories', require('./routes/categories'));
 app.use('/api/brands', require('./routes/brands'));
 app.use('/api/customers', require('./routes/customers'));
 app.use('/api/orders', require('./routes/orders'));
+app.use('/api/inventory', require('./routes/inventory'));
 app.use('/api/payment', require('./routes/payment'));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/dashboard', require('./routes/dashboard'));
@@ -55,7 +56,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Lỗi server nội bộ' });
 });
 
-// ── Start ────────────────────────────────────────────────
+// ── Start (v4) ──────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`
 ╔══════════════════════════════════════════════════╗

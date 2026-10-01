@@ -206,7 +206,7 @@ router.post('/', async (req, res) => {
 router.patch('/:idOrCode/status', async (req, res) => {
   try {
     const { status } = req.body;
-    const validStatuses = ['pending', 'paid', 'shipping', 'completed', 'cancelled'];
+    const validStatuses = ['pending', 'confirmed', 'paid', 'shipping', 'delivered', 'completed', 'cancelled'];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ error: 'Trạng thái không hợp lệ', valid: validStatuses });
     }
