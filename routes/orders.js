@@ -1,15 +1,31 @@
 // ── Orders Routes cho DB BANPHUKIEN ───────────────────────
 const router = require('express').Router();
 const pool = require('../db');
+const { verifyToken, requireAdmin } = require('../middleware/auth');
 
 // GET /api/orders - Lấy tất cả đơn hàng (filter, phân trang)
-router.get('/', async (req, res) => {
+router.get('/', verifyToken, async (req, res) => {
   try {
     const { status, customer_id, search, page = 1, limit = 50 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
     let where = [];
     let params = [];
     let i = 1;
+
+    // Khách hàng chỉ được xem đơn gắn với email trong JWT của chính họ.
+    // Admin vẫn được xem toàn bộ đơn hàng.
+    if (req.user.role !== 'admin') {
+      where.push(`(
+        LOWER(COALESCE(o.customer_email, '')) = LOWER($${i})
+        OR EXISTS (
+          SELECT 1 FROM customers own_customer
+          WHERE own_customer.id = o.customer_id
+            AND LOWER(COALESCE(own_customer.email, '')) = LOWER($${i})
+        )
+      )`);
+      params.push(req.user.email || '');
+      i++;
+    }
 
     if (status) {
       where.push(`o.status = $${i++}`);
@@ -300,10 +316,20 @@ router.post('/', async (req, res) => {
         }
 
         if (prodId) {
-          await client.query(
-            'UPDATE products SET quantity = GREATEST(0, quantity - $1), updated_at = NOW() WHERE id = $2',
+          const stockResult = await client.query(
+            `UPDATE products SET quantity = GREATEST(0, quantity - $1), updated_at = NOW()
+             WHERE id = $2 RETURNING name, sku, quantity + $1 AS previous_qty, quantity AS new_qty`,
             [quantity, prodId]
           );
+          const stock = stockResult.rows[0];
+          if (stock) {
+            await client.query(
+              `INSERT INTO inventory_logs
+                (product_id, product_name, product_sku, order_id, type, change_qty, previous_qty, new_qty, note)
+               VALUES ($1, $2, $3, $4, 'reserve_order', $5, $6, $7, $8)`,
+              [prodId, stock.name, stock.sku, orderCode, -quantity, stock.previous_qty, stock.new_qty, `Giữ hàng cho đơn ${orderCode}`]
+            );
+          }
         }
       }
     }
@@ -344,7 +370,7 @@ router.post('/', async (req, res) => {
 });
 
 // GET /api/orders/fix-constraint - Tự động sửa ràng buộc status
-router.get('/fix-constraint', async (req, res) => {
+router.get('/fix-constraint', verifyToken, requireAdmin, async (req, res) => {
   try {
     const constrBefore = await pool.query("SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'orders'::regclass");
     await pool.query("ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_status_check");
@@ -357,7 +383,7 @@ router.get('/fix-constraint', async (req, res) => {
 });
 
 // PATCH /api/orders/:idOrCode/status - Cập nhật trạng thái đơn
-router.patch('/:idOrCode/status', async (req, res) => {
+router.patch('/:idOrCode/status', verifyToken, requireAdmin, async (req, res) => {
   try {
     const { status } = req.body;
     const validStatuses = ['pending', 'confirmed', 'paid', 'shipping', 'delivered', 'completed', 'cancelled'];
@@ -415,7 +441,7 @@ router.patch('/:idOrCode/status', async (req, res) => {
 });
 
 // DELETE /api/orders/:id
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
     const result = await pool.query('DELETE FROM orders WHERE id = $1 RETURNING id, code', [parseInt(req.params.id)]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Không tìm thấy đơn hàng' });

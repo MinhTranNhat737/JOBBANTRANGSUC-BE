@@ -5,6 +5,8 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+const { verifyToken, requireAdmin } = require('./middleware/auth');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -29,6 +31,14 @@ if (rawCorsOrigin) {
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.set('trust proxy', 1);
+const apiLimit = Number(process.env.API_RATE_LIMIT || (process.env.NODE_ENV === 'production' ? 300 : 2000));
+const apiLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: apiLimit, standardHeaders: 'draft-7', legacyHeaders: false });
+const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 5, standardHeaders: 'draft-7', legacyHeaders: false });
+const webhookLimiter = rateLimit({ windowMs: 60 * 1000, limit: 30, standardHeaders: 'draft-7', legacyHeaders: false });
+app.use('/api', apiLimiter);
+app.use('/api/auth/login', loginLimiter);
+app.use(['/api/payment/sepay/webhook', '/api/payment/momo/ipn'], webhookLimiter);
 
 // Log requests (dev)
 app.use((req, res, next) => {
@@ -40,12 +50,13 @@ app.use((req, res, next) => {
 app.use('/api/products', require('./routes/products'));
 app.use('/api/categories', require('./routes/categories'));
 app.use('/api/brands', require('./routes/brands'));
-app.use('/api/customers', require('./routes/customers'));
+app.use('/api/customers', verifyToken, requireAdmin, require('./routes/customers'));
 app.use('/api/orders', require('./routes/orders'));
-app.use('/api/inventory', require('./routes/inventory'));
+app.use('/api/inventory', verifyToken, requireAdmin, require('./routes/inventory'));
 app.use('/api/payment', require('./routes/payment'));
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/dashboard', require('./routes/dashboard'));
+app.use('/api/wishlist', verifyToken, require('./routes/wishlist'));
+app.use('/api/dashboard', verifyToken, requireAdmin, require('./routes/dashboard'));
 
 // ── Health check ─────────────────────────────────────────
 app.get('/api/health', async (req, res) => {
@@ -96,3 +107,4 @@ API Endpoints:
   GET    /api/dashboard/stats     Thống kê tổng quan
   `);
 });
+ // reload

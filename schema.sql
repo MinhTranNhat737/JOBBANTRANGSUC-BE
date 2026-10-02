@@ -1,142 +1,181 @@
--- ================================================================
--- LEGEND JEWELRY - PostgreSQL Schema
--- Chạy file này trong pgAdmin hoặc psql để tạo database + tables
--- ================================================================
+BEGIN;
 
--- Tạo database (chạy trong psql hoặc pgAdmin SQL Editor khi connect vào postgres)
--- CREATE DATABASE legend_jewelry;
-
--- ═══════════════════════════════════════════════════════════════
--- BẢNG: categories
--- ═══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS categories (
   id SERIAL PRIMARY KEY,
-  slug VARCHAR(50) UNIQUE NOT NULL,
-  name VARCHAR(100) NOT NULL,
-  created_at TIMESTAMP DEFAULT NOW()
+  slug VARCHAR(100) UNIQUE NOT NULL,
+  name VARCHAR(150) NOT NULL,
+  parent_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ═══════════════════════════════════════════════════════════════
--- BẢNG: products
--- ═══════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS brands (
+  id SERIAL PRIMARY KEY,
+  slug VARCHAR(100) UNIQUE NOT NULL,
+  name VARCHAR(150) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS products (
   id SERIAL PRIMARY KEY,
+  sku VARCHAR(100) UNIQUE NOT NULL,
   slug VARCHAR(200) UNIQUE NOT NULL,
-  name VARCHAR(200) NOT NULL,
-  category_slug VARCHAR(50) REFERENCES categories(slug),
-  price INTEGER NOT NULL DEFAULT 0,
-  compare_at_price INTEGER,
-  image VARCHAR(500),
-  badge VARCHAR(20),
-  stock INTEGER NOT NULL DEFAULT 0,
-  sizes TEXT[], -- PostgreSQL array cho sizes
-  material VARCHAR(300),
+  name VARCHAR(255) NOT NULL,
   description TEXT,
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW()
+  category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+  brand_id INTEGER REFERENCES brands(id) ON DELETE SET NULL,
+  quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+  import_price NUMERIC(14,2) CHECK (import_price IS NULL OR import_price >= 0),
+  sale_price NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (sale_price >= 0),
+  ctv_price NUMERIC(14,2) CHECK (ctv_price IS NULL OR ctv_price >= 0),
+  qc_status VARCHAR(30),
+  status VARCHAR(30) NOT NULL DEFAULT 'active',
+  note TEXT,
+  badge VARCHAR(50),
+  sizes TEXT[],
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ═══════════════════════════════════════════════════════════════
--- BẢNG: customers
--- ═══════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS product_images (
+  id SERIAL PRIMARY KEY,
+  product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  url VARCHAR(1000) NOT NULL,
+  is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS customers (
-  id VARCHAR(50) PRIMARY KEY,
-  name VARCHAR(200) NOT NULL,
-  email VARCHAR(200) UNIQUE NOT NULL,
-  phone VARCHAR(20),
+  id SERIAL PRIMARY KEY,
+  full_name VARCHAR(200) NOT NULL,
+  email VARCHAR(200) UNIQUE,
+  phone VARCHAR(30),
   address TEXT,
-  password_hash VARCHAR(200) NOT NULL DEFAULT '123456',
-  total_orders INTEGER DEFAULT 0,
-  total_spent BIGINT DEFAULT 0,
-  joined_at TIMESTAMP DEFAULT NOW(),
-  last_order_at TIMESTAMP
+  is_ctv BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ═══════════════════════════════════════════════════════════════
--- BẢNG: orders
--- ═══════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS users (
+  id SERIAL PRIMARY KEY,
+  username VARCHAR(80) UNIQUE NOT NULL,
+  email VARCHAR(200) UNIQUE NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  full_name VARCHAR(200) NOT NULL,
+  role VARCHAR(30) NOT NULL DEFAULT 'customer',
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_login_at TIMESTAMPTZ
+);
+
 CREATE TABLE IF NOT EXISTS orders (
-  id VARCHAR(20) PRIMARY KEY,
-  customer_id VARCHAR(50) REFERENCES customers(id) ON DELETE SET NULL,
-  customer_name VARCHAR(200) NOT NULL,
+  id SERIAL PRIMARY KEY,
+  code VARCHAR(50) UNIQUE NOT NULL,
+  customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
   customer_email VARCHAR(200),
-  customer_phone VARCHAR(20),
-  customer_address TEXT,
-  total BIGINT NOT NULL DEFAULT 0,
-  shipping_fee INTEGER DEFAULT 30000,
-  status VARCHAR(20) NOT NULL DEFAULT 'pending',
-  notes TEXT,
-  payment_method VARCHAR(50),
-  payment_gateway VARCHAR(20),
-  payment_status VARCHAR(20) DEFAULT 'pending',
-  transaction_id VARCHAR(100),
-  paid_at TIMESTAMP,
-  created_at TIMESTAMP DEFAULT NOW()
+  shipping_name VARCHAR(200) NOT NULL,
+  shipping_phone VARCHAR(30) NOT NULL,
+  shipping_addr TEXT NOT NULL,
+  total_amount NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (total_amount >= 0),
+  shipping_fee NUMERIC(14,2) NOT NULL DEFAULT 0,
+  payment_method VARCHAR(80),
+  payment_gateway VARCHAR(50),
+  payment_status VARCHAR(30) NOT NULL DEFAULT 'pending',
+  transaction_id VARCHAR(200),
+  paid_at TIMESTAMPTZ,
+  status VARCHAR(30) NOT NULL DEFAULT 'pending',
+  note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ═══════════════════════════════════════════════════════════════
--- BẢNG: order_items
--- ═══════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS order_items (
   id SERIAL PRIMARY KEY,
-  order_id VARCHAR(20) REFERENCES orders(id) ON DELETE CASCADE,
-  product_slug VARCHAR(200),
-  name VARCHAR(200) NOT NULL,
-  image VARCHAR(500),
-  size VARCHAR(20),
-  quantity INTEGER NOT NULL DEFAULT 1,
-  price INTEGER NOT NULL DEFAULT 0
+  order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  name VARCHAR(255) NOT NULL,
+  unit_price NUMERIC(14,2) NOT NULL DEFAULT 0,
+  quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity > 0),
+  image VARCHAR(1000),
+  size VARCHAR(80),
+  product_slug VARCHAR(200)
 );
 
--- ═══════════════════════════════════════════════════════════════
--- BẢNG: order_timeline
--- ═══════════════════════════════════════════════════════════════
+-- Giá trên hóa đơn là snapshot tại thời điểm đặt hàng và không được thay đổi
+-- khi giá bán hiện tại của sản phẩm được chỉnh sửa.
+CREATE OR REPLACE FUNCTION prevent_order_item_price_change()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.unit_price IS DISTINCT FROM OLD.unit_price THEN
+    RAISE EXCEPTION 'Không thể thay đổi đơn giá của mặt hàng thuộc đơn cũ';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_order_item_price_immutable ON order_items;
+CREATE TRIGGER trg_order_item_price_immutable
+BEFORE UPDATE ON order_items
+FOR EACH ROW EXECUTE FUNCTION prevent_order_item_price_change();
+
+CREATE OR REPLACE FUNCTION prevent_order_total_change()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.total_amount IS DISTINCT FROM OLD.total_amount THEN
+    RAISE EXCEPTION 'Không thể thay đổi tổng tiền của đơn cũ';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_order_total_immutable ON orders;
+CREATE TRIGGER trg_order_total_immutable
+BEFORE UPDATE ON orders
+FOR EACH ROW EXECUTE FUNCTION prevent_order_total_change();
+
 CREATE TABLE IF NOT EXISTS order_timeline (
   id SERIAL PRIMARY KEY,
-  order_id VARCHAR(20) REFERENCES orders(id) ON DELETE CASCADE,
-  date TIMESTAMP NOT NULL DEFAULT NOW(),
-  status VARCHAR(200) NOT NULL,
+  order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  date TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  status VARCHAR(100) NOT NULL,
   note TEXT
 );
 
--- ═══════════════════════════════════════════════════════════════
--- BẢNG: brands
--- ═══════════════════════════════════════════════════════════════
-CREATE TABLE IF NOT EXISTS brands (
+CREATE TABLE IF NOT EXISTS inventory_logs (
   id SERIAL PRIMARY KEY,
-  slug VARCHAR(50) UNIQUE NOT NULL,
-  name VARCHAR(100) NOT NULL,
-  created_at TIMESTAMP DEFAULT NOW()
+  product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  product_name VARCHAR(255), product_sku VARCHAR(100), order_id VARCHAR(50),
+  type VARCHAR(50) NOT NULL, change_qty INTEGER NOT NULL,
+  previous_qty INTEGER, new_qty INTEGER, note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ═══════════════════════════════════════════════════════════════
--- BẢNG: users (Admin & Staff)
--- ═══════════════════════════════════════════════════════════════
-CREATE TABLE IF NOT EXISTS users (
-  id SERIAL PRIMARY KEY,
-  username VARCHAR(50) UNIQUE NOT NULL,
-  email VARCHAR(100) UNIQUE NOT NULL,
-  password_hash VARCHAR(255) NOT NULL,
-  full_name VARCHAR(100) NOT NULL,
-  role VARCHAR(20) DEFAULT 'admin',
-  is_active BOOLEAN DEFAULT TRUE,
-  created_at TIMESTAMP DEFAULT NOW(),
-  last_login_at TIMESTAMP
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id BIGSERIAL PRIMARY KEY,
+  token_hash CHAR(64) UNIQUE NOT NULL,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Tài khoản admin mặc định: admin / admin123
-INSERT INTO users (username, email, password_hash, full_name, role)
-VALUES ('admin', 'admin@legend.vn', '$2a$10$rQeG9VzU80KzYhTqR71X..vP0kPqYp5X4Y1Gj3X9lT0L2O1S2Z7aW', 'Quản trị viên', 'admin')
-ON CONFLICT (username) DO NOTHING;
+CREATE TABLE IF NOT EXISTS wishlists (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, product_id)
+);
 
--- ═══════════════════════════════════════════════════════════════
--- INDEXES cho performance
--- ═══════════════════════════════════════════════════════════════
-CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_slug);
-CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
+CREATE INDEX IF NOT EXISTS idx_products_brand ON products(brand_id);
+CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
+CREATE INDEX IF NOT EXISTS idx_products_created ON products(created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_product_primary_image ON product_images(product_id) WHERE is_primary;
 CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id);
-CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_orders_status_created ON orders(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
-CREATE INDEX IF NOT EXISTS idx_order_timeline_order ON order_timeline(order_id);
-CREATE INDEX IF NOT EXISTS idx_customers_email ON customers(email);
+CREATE INDEX IF NOT EXISTS idx_inventory_product_created ON inventory_logs(product_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reset_tokens_expiry ON password_reset_tokens(expires_at);
 
+COMMIT;

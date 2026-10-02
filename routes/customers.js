@@ -5,8 +5,10 @@ const pool = require('../db');
 // GET /api/customers - Lấy tất cả khách hàng
 router.get('/', async (req, res) => {
   try {
-    const { is_ctv, search, page = 1, limit = 50 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const { is_ctv, search } = req.query;
+    const safePage = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const safeLimit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const offset = (safePage - 1) * safeLimit;
     let where = [];
     let params = [];
     let i = 1;
@@ -37,16 +39,17 @@ router.get('/', async (req, res) => {
       ORDER BY c.created_at DESC
       LIMIT $${i++} OFFSET $${i++}
     `;
-    params.push(parseInt(limit), offset);
+    params.push(safeLimit, offset);
 
     const result = await pool.query(query, params);
     res.json({
       customers: result.rows,
+      total,
       pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
+        page: safePage,
+        limit: safeLimit,
         total,
-        totalPages: Math.ceil(total / parseInt(limit)),
+        totalPages: Math.ceil(total / safeLimit),
       },
     });
   } catch (err) {

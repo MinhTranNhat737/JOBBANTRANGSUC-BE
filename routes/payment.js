@@ -9,8 +9,8 @@ const { sendTelegramAlert, buildPaymentSuccessAlert } = require('../services/tel
 const getPaymentConfig = () => ({
   momo: {
     partnerCode: process.env.MOMO_PARTNER_CODE || 'MOMO',
-    accessKey: process.env.MOMO_ACCESS_KEY || 'F8BBA842ECF85',
-    secretKey: process.env.MOMO_SECRET_KEY || 'K951B6PE1waDMi640xX08PD3vg6EkVlz',
+    accessKey: process.env.MOMO_ACCESS_KEY || '',
+    secretKey: process.env.MOMO_SECRET_KEY || '',
     endpoint: process.env.MOMO_ENDPOINT || 'https://test-payment.momo.vn/v2/gateway/api/create',
   },
   sepay: {
@@ -52,9 +52,10 @@ async function markOrderAsPaid(order, gateway, transactionId, gatewayName) {
 
   await pool.query(
     `UPDATE orders 
-     SET status = 'paid', payment_method = $1, updated_at = NOW() 
-     WHERE id = $2`,
-    [paymentMethod, order.id]
+     SET status = 'paid', payment_method = $1, payment_gateway = $2,
+         payment_status = 'paid', transaction_id = $3, paid_at = NOW(), updated_at = NOW()
+     WHERE id = $4`,
+    [paymentMethod, gateway, transactionId || null, order.id]
   );
 
   // Gửi Telegram alert
@@ -82,6 +83,9 @@ router.post('/momo/create', async (req, res) => {
 
     const config = getPaymentConfig();
     const { partnerCode, accessKey, secretKey, endpoint } = config.momo;
+    if (!partnerCode || !accessKey || !secretKey) {
+      return res.status(503).json({ error: 'MoMo chưa được cấu hình' });
+    }
     const amount = Math.round(parseFloat(order.total_amount || 0));
 
     const momoOrderId = `${(order.code || order.id).toString().replace(/[^a-zA-Z0-9]/g, '')}_${Date.now()}`;
@@ -226,6 +230,16 @@ router.get('/sepay/info/:orderId', async (req, res) => {
 router.post('/sepay/webhook', async (req, res) => {
   try {
     const body = req.body || {};
+    const secret = process.env.SEPAY_WEBHOOK_SECRET;
+    if (!secret) return res.status(503).json({ error: 'SePay webhook chưa được cấu hình' });
+    const supplied = req.get('x-sepay-signature') || req.get('x-webhook-signature') || body.signature || '';
+    const payload = body.signature ? { ...body, signature: undefined } : body;
+    const expected = crypto.createHmac('sha256', secret).update(JSON.stringify(payload)).digest('hex');
+    const normalized = String(supplied).replace(/^sha256=/i, '');
+    if (!normalized || normalized.length !== expected.length ||
+        !crypto.timingSafeEqual(Buffer.from(normalized), Buffer.from(expected))) {
+      return res.status(401).json({ error: 'Chữ ký webhook không hợp lệ' });
+    }
     console.log('🔔 SePay Webhook Received:', body);
 
     const content = body.transactionContent || body.body || '';
@@ -278,7 +292,7 @@ router.get('/check/:orderId', async (req, res) => {
     const order = await findOrder(req.params.orderId);
     if (!order) return res.status(404).json({ error: 'Đơn hàng không tồn tại' });
 
-    let isPaid = order.status === 'paid' || order.status === 'completed';
+    let isPaid = order.payment_status === 'paid' || order.status === 'paid' || order.status === 'completed';
 
     // NẾU CHƯA PAID: Tự động kiểm tra SePay Transactions API
     // Giúp tự động duyệt đơn ngay cả trên Localhost mà không cần ngrok webhook
@@ -338,7 +352,7 @@ router.get('/check/:orderId', async (req, res) => {
       code: order.code,
       isPaid,
       status: isPaid ? 'paid' : order.status,
-      paymentMethod: order.payment_method,
+      paymentMethod: isPaid && order.payment_method === 'cod' ? 'Chuyển khoản SePay (VietQR)' : order.payment_method,
       totalAmount: order.total_amount,
     });
   } catch (err) {

@@ -1,6 +1,7 @@
 // ── Brands Routes cho DB BANPHUKIEN ────────────────────────
 const router = require('express').Router();
 const pool = require('../db');
+const { verifyToken, requireAdmin } = require('../middleware/auth');
 
 // GET /api/brands
 router.get('/', async (req, res) => {
@@ -35,7 +36,7 @@ router.get('/:slugOrId', async (req, res) => {
 });
 
 // POST /api/brands
-router.post('/', async (req, res) => {
+router.post('/', verifyToken, requireAdmin, async (req, res) => {
   try {
     const { name, slug } = req.body;
     if (!name) return res.status(400).json({ error: 'Tên thương hiệu là bắt buộc' });
@@ -52,7 +53,7 @@ router.post('/', async (req, res) => {
 });
 
 // PUT /api/brands/:id
-router.put('/:id', async (req, res) => {
+router.put('/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
     const { name, slug } = req.body;
     const result = await pool.query(
@@ -67,7 +68,7 @@ router.put('/:id', async (req, res) => {
 });
 
 // DELETE /api/brands/:id
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
     const result = await pool.query('DELETE FROM brands WHERE id = $1 RETURNING id', [parseInt(req.params.id)]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Không tìm thấy' });

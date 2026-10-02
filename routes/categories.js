@@ -1,6 +1,7 @@
 // ── Categories Routes cho DB BANPHUKIEN ────────────────────
 const router = require('express').Router();
 const pool = require('../db');
+const { verifyToken, requireAdmin } = require('../middleware/auth');
 
 // GET /api/categories - Lấy tất cả danh mục (kèm số lượng sản phẩm)
 router.get('/', async (req, res) => {
@@ -38,7 +39,7 @@ router.get('/:slugOrId', async (req, res) => {
 });
 
 // POST /api/categories
-router.post('/', async (req, res) => {
+router.post('/', verifyToken, requireAdmin, async (req, res) => {
   try {
     const { name, slug, parent_id, sort_order = 0 } = req.body;
     if (!name) return res.status(400).json({ error: 'Tên danh mục là bắt buộc' });
@@ -55,7 +56,7 @@ router.post('/', async (req, res) => {
 });
 
 // PUT /api/categories/:id
-router.put('/:id', async (req, res) => {
+router.put('/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
     const { name, slug, parent_id, sort_order } = req.body;
     const result = await pool.query(
@@ -75,7 +76,7 @@ router.put('/:id', async (req, res) => {
 });
 
 // DELETE /api/categories/:id
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
     const result = await pool.query('DELETE FROM categories WHERE id = $1 RETURNING id', [parseInt(req.params.id)]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Không tìm thấy' });

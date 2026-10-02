@@ -165,7 +165,8 @@ router.post('/dispatch', async (req, res) => {
 
       if (foundProduct) {
         const prevQty = foundProduct.quantity || 0;
-        const newQty = Math.max(0, prevQty - qty);
+        // Tồn kho đã được giữ khi tạo đơn; xuất kho không được trừ lần hai.
+        const newQty = prevQty;
 
         // Cập nhật tồn kho
         await client.query(
@@ -183,7 +184,7 @@ router.post('/dispatch', async (req, res) => {
             foundProduct.name,
             foundProduct.sku,
             rawId,
-            -qty,
+            0,
             prevQty,
             newQty,
             note || `Xuất kho giao cho đơn hàng ${rawId}`,
@@ -194,7 +195,7 @@ router.post('/dispatch', async (req, res) => {
           id: foundProduct.id,
           name: foundProduct.name,
           sku: foundProduct.sku,
-          deducted: qty,
+          deducted: 0,
           previousStock: prevQty,
           currentStock: newQty,
           isOutOfStock: newQty <= 0,

@@ -1,6 +1,7 @@
 // ── Products Routes cho DB BANPHUKIEN ─────────────────────
 const router = require('express').Router();
 const pool = require('../db');
+const { verifyToken, requireAdmin } = require('../middleware/auth');
 
 // GET /api/products - Lấy tất cả sản phẩm (filter theo category_id, brand_id, status, search, phân trang)
 router.get('/', async (req, res) => {
@@ -132,7 +133,7 @@ router.get('/:slugOrId', async (req, res) => {
 });
 
 // POST /api/products - Tạo sản phẩm mới
-router.post('/', async (req, res) => {
+router.post('/', verifyToken, requireAdmin, async (req, res) => {
   try {
     const {
       sku,
@@ -211,7 +212,7 @@ router.post('/', async (req, res) => {
 });
 
 // PUT /api/products/:idOrSlug - Cập nhật sản phẩm & hình ảnh
-router.put('/:idOrSlug', async (req, res) => {
+router.put('/:idOrSlug', verifyToken, requireAdmin, async (req, res) => {
   try {
     const isId = /^\d+$/.test(req.params.idOrSlug);
     let productId;
@@ -308,7 +309,7 @@ router.put('/:idOrSlug', async (req, res) => {
 
 
 // DELETE /api/products/:id - Xóa sản phẩm
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', verifyToken, requireAdmin, async (req, res) => {
   try {
     const result = await pool.query('DELETE FROM products WHERE id = $1 RETURNING id', [parseInt(req.params.id)]);
     if (result.rows.length === 0) return res.status(404).json({ error: 'Không tìm thấy' });
